@@ -13,6 +13,13 @@ let state = loadState();
 function id() { return crypto.randomUUID(); }
 function shuffle(list) { return [...list].sort(() => Math.random() - 0.5); }
 function word(text) { return { id: id(), text, guessed: false }; }
+function getSessionId() { return new URLSearchParams(window.location.search).get('session'); }
+function createSessionId() { return getSessionId() || id(); }
+function joinUrl() {
+  const url = new URL(window.location.origin);
+  url.searchParams.set('session', state.sessionId);
+  return url.toString();
+}
 function defaultState() {
   return {
     teams: [{ id: id(), name: 'Team Coral', score: 0 }, { id: id(), name: 'Team Kelp', score: 0 }],
@@ -22,12 +29,15 @@ function defaultState() {
     turnSeconds: 60,
     currentWordId: null,
     phase: 'setup',
+    sessionId: createSessionId(),
   };
 }
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (saved?.teams?.length >= 2 && saved?.words?.length) return saved;
+    if (saved?.teams?.length >= 2 && saved?.words?.length) {
+      return { ...saved, sessionId: getSessionId() || saved.sessionId || id() };
+    }
   } catch (error) {
     console.warn('Ignoring malformed saved game.', error);
   }
@@ -59,18 +69,43 @@ function renderScoreboard() {
     </article>`).join('');
 }
 function renderSetup() {
+  const url = joinUrl();
   document.querySelector('#game-view').innerHTML = `
     <section class="setup-grid">
+      <article class="card join-card"><h2>📱 Join this bowl</h2><p>Share this link with players so they can join this session from their phones.</p><input id="join-url" class="join-url" value="${escapeHtml(url)}" readonly /><div id="join-qr" class="join-qr" aria-label="QR code for ${escapeHtml(url)}"></div><button id="copy-link" type="button">Copy link</button></article>
       <article class="card"><h2>👥 Teams</h2><form id="team-form" class="inline-form"><input id="team-input" placeholder="Add team name" /><button type="submit">＋ Add</button></form><div class="chip-list">${state.teams.map((team) => `<button class="chip" data-remove-team="${team.id}">${escapeHtml(team.name)} ${state.teams.length > 2 ? '×' : ''}</button>`).join('')}</div></article>
       <article class="card"><h2>🐠 Bowl words</h2><form id="word-form" class="inline-form"><input id="word-input" placeholder="Add a person, place, or thing" /><button type="submit">＋ Add</button></form><div class="chip-list">${state.words.map((item) => `<button class="chip" data-remove-word="${item.id}">${escapeHtml(item.text)} ×</button>`).join('')}</div></article>
       <article class="card rules"><h2>⏱ Rules</h2><ol>${ROUND_NAMES.map((round, index) => `<li><strong>${round}:</strong> ${ROUND_HELP[index]}</li>`).join('')}</ol><label>Turn length <input id="turn-seconds" type="number" min="15" max="180" value="${state.turnSeconds}" /> seconds</label><button id="start-game" ${state.words.length < 3 ? 'disabled' : ''}>Start game</button></article>
     </section>`;
+  renderQrCode(url);
+  document.querySelector('#copy-link').addEventListener('click', copyJoinLink);
   document.querySelector('#team-form').addEventListener('submit', addTeam);
   document.querySelector('#word-form').addEventListener('submit', addWord);
   document.querySelector('#turn-seconds').addEventListener('change', (event) => setState({ turnSeconds: Number(event.target.value) }));
   document.querySelector('#start-game').addEventListener('click', startGame);
   document.querySelectorAll('[data-remove-team]').forEach((button) => button.addEventListener('click', () => removeTeam(button.dataset.removeTeam)));
   document.querySelectorAll('[data-remove-word]').forEach((button) => button.addEventListener('click', () => removeWord(button.dataset.removeWord)));
+}
+function renderQrCode(url) {
+  const container = document.querySelector('#join-qr');
+  if (!container) return;
+  container.innerHTML = '';
+  if (window.QRCode) {
+    new window.QRCode(container, { text: url, width: 180, height: 180, correctLevel: window.QRCode.CorrectLevel.M });
+  } else {
+    container.textContent = 'QR code unavailable. Copy the link instead.';
+  }
+}
+async function copyJoinLink() {
+  const input = document.querySelector('#join-url');
+  input.select();
+  input.setSelectionRange(0, input.value.length);
+  if (navigator.clipboard) {
+    await navigator.clipboard.writeText(input.value);
+  } else {
+    document.execCommand('copy');
+  }
+  document.querySelector('#copy-link').textContent = 'Copied!';
 }
 function renderBetween() {
   document.querySelector('#game-view').innerHTML = `<section class="card centered"><p class="eyebrow">🔀 Next turn</p><h2>${escapeHtml(state.teams[state.currentTeam].name)}, you are up.</h2><p>Round ${state.round + 1}: ${ROUND_NAMES[state.round]}. ${ROUND_HELP[state.round]}</p><button id="start-turn">Start ${state.turnSeconds}s turn</button></section>`;
