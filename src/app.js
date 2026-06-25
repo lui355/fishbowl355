@@ -6,9 +6,31 @@ const ROUND_HELP = [
 ];
 const STARTER_WORDS = ['octopus', 'time machine', 'karaoke', 'volcano', 'grandma', 'moonwalk', 'detective', 'pickleball'];
 const STORAGE_KEY = 'fishbowl355-state';
+const HOST_SESSION_KEY = 'fishbowl355-host-session';
+const api = {
+  async request(path, options = {}) {
+    const response = await fetch(path, {
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      ...options,
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || 'Request failed');
+    return body;
+  },
+  createSession: () => api.request('/api/sessions', { method: 'POST' }),
+  fetchSession: (sessionId) => api.request(`/api/sessions/${sessionId}`),
+  submitTopic: (sessionId, text) => api.request(`/api/sessions/${sessionId}/topics`, { method: 'POST', body: JSON.stringify({ text }) }),
+  listTopics: (sessionId) => api.request(`/api/sessions/${sessionId}/topics`),
+  updateTopic: (sessionId, topicId, status) => api.request(`/api/sessions/${sessionId}/topics/${topicId}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  setSubmissions: (sessionId, open) => api.request(`/api/sessions/${sessionId}/submissions`, { method: 'PATCH', body: JSON.stringify({ open }) }),
+};
 let timerId;
 let timeLeft = 60;
 let state = loadState();
+let hostSession = loadHostSession();
+let hostTopics = [];
+let hostSessionError = '';
+const joinSessionId = new URLSearchParams(window.location.search).get('join');
 
 function id() { return crypto.randomUUID(); }
 function shuffle(list) { return [...list].sort(() => Math.random() - 0.5); }
@@ -23,6 +45,18 @@ function defaultState() {
     currentWordId: null,
     phase: 'setup',
   };
+}
+function loadHostSession() {
+  try {
+    return JSON.parse(localStorage.getItem(HOST_SESSION_KEY));
+  } catch {
+    return null;
+  }
+}
+function saveHostSession(session) {
+  hostSession = session;
+  if (session) localStorage.setItem(HOST_SESSION_KEY, JSON.stringify(session));
+  else localStorage.removeItem(HOST_SESSION_KEY);
 }
 function loadState() {
   try {
@@ -44,6 +78,7 @@ function escapeHtml(value) {
 
 function render() {
   clearInterval(timerId);
+  if (joinSessionId) return renderParticipant();
   renderScoreboard();
   if (isComplete()) renderComplete();
   else if (state.phase === 'setup') renderSetup();
@@ -62,10 +97,12 @@ function renderSetup() {
   document.querySelector('#game-view').innerHTML = `
     <section class="setup-grid">
       <article class="card"><h2>👥 Teams</h2><form id="team-form" class="inline-form"><input id="team-input" placeholder="Add team name" /><button type="submit">＋ Add</button></form><div class="chip-list">${state.teams.map((team) => `<button class="chip" data-remove-team="${team.id}">${escapeHtml(team.name)} ${state.teams.length > 2 ? '×' : ''}</button>`).join('')}</div></article>
+      <article class="card"><h2>📲 Phone submissions</h2>${renderSessionPanel()}</article>
       <article class="card"><h2>🐠 Bowl words</h2><form id="word-form" class="inline-form"><input id="word-input" placeholder="Add a person, place, or thing" /><button type="submit">＋ Add</button></form><div class="chip-list">${state.words.map((item) => `<button class="chip" data-remove-word="${item.id}">${escapeHtml(item.text)} ×</button>`).join('')}</div></article>
       <article class="card rules"><h2>⏱ Rules</h2><ol>${ROUND_NAMES.map((round, index) => `<li><strong>${round}:</strong> ${ROUND_HELP[index]}</li>`).join('')}</ol><label>Turn length <input id="turn-seconds" type="number" min="15" max="180" value="${state.turnSeconds}" /> seconds</label><button id="start-game" ${state.words.length < 3 ? 'disabled' : ''}>Start game</button></article>
     </section>`;
   document.querySelector('#team-form').addEventListener('submit', addTeam);
+  bindSessionPanel();
   document.querySelector('#word-form').addEventListener('submit', addWord);
   document.querySelector('#turn-seconds').addEventListener('change', (event) => setState({ turnSeconds: Number(event.target.value) }));
   document.querySelector('#start-game').addEventListener('click', startGame);
@@ -89,6 +126,65 @@ function renderPlay() {
   document.querySelector('#pass').addEventListener('click', pass);
   document.querySelector('#end-turn').addEventListener('click', endTurn);
   timerId = setInterval(tick, 1000);
+}
+
+function renderSessionPanel() {
+  if (!hostSession) return `<p>Start a shared session so players can add topics from their own phones.</p><button id="create-session">Create phone submission session</button>${hostSessionError ? `<p class="error">${escapeHtml(hostSessionError)}</p>` : ''}`;
+  const shareUrl = `${window.location.origin}${window.location.pathname}?join=${hostSession.sessionId}`;
+  const newTopics = hostTopics.filter((topic) => topic.status === 'new');
+  return `<p class="session-code">Session <strong>${escapeHtml(hostSession.sessionId)}</strong></p><p><a href="${shareUrl}" target="_blank" rel="noreferrer">${shareUrl}</a></p><div class="actions"><button id="refresh-topics">Refresh topics</button><button id="import-topics" ${newTopics.length === 0 ? 'disabled' : ''}>Add ${newTopics.length} to bowl</button><button class="ghost" id="toggle-submissions">${hostSession.submissionsOpen ? 'Close submissions' : 'Reopen submissions'}</button></div>${hostSessionError ? `<p class="error">${escapeHtml(hostSessionError)}</p>` : ''}<div class="topic-list">${hostTopics.map((topic) => `<div class="topic-row"><span>${escapeHtml(topic.text)}</span><small>${escapeHtml(topic.status)}</small><button data-topic-status="discussed" data-topic-id="${topic.id}">Discussed</button><button class="ghost" data-topic-status="skipped" data-topic-id="${topic.id}">Skipped</button></div>`).join('') || '<p>No phone topics yet.</p>'}</div>`;
+}
+function bindSessionPanel() {
+  document.querySelector('#create-session')?.addEventListener('click', createHostSession);
+  document.querySelector('#refresh-topics')?.addEventListener('click', refreshHostTopics);
+  document.querySelector('#import-topics')?.addEventListener('click', importHostTopics);
+  document.querySelector('#toggle-submissions')?.addEventListener('click', toggleSubmissions);
+  document.querySelectorAll('[data-topic-id]').forEach((button) => button.addEventListener('click', () => markTopic(button.dataset.topicId, button.dataset.topicStatus)));
+}
+async function createHostSession() {
+  try {
+    const { session } = await api.createSession();
+    saveHostSession(session);
+    hostTopics = [];
+    hostSessionError = '';
+  } catch (error) { hostSessionError = error.message; }
+  render();
+}
+async function refreshHostTopics() {
+  if (!hostSession) return;
+  try {
+    const [{ session }, { topics }] = await Promise.all([api.fetchSession(hostSession.sessionId), api.listTopics(hostSession.sessionId)]);
+    saveHostSession(session);
+    hostTopics = topics;
+    hostSessionError = '';
+  } catch (error) { hostSessionError = error.message; }
+  render();
+}
+async function importHostTopics() {
+  const newTopics = hostTopics.filter((topic) => topic.status === 'new');
+  setState({ words: [...state.words, ...newTopics.map((topic) => word(topic.text))] });
+  await Promise.all(newTopics.map((topic) => api.updateTopic(hostSession.sessionId, topic.id, 'discussed')));
+  await refreshHostTopics();
+}
+async function markTopic(topicId, status) {
+  try { await api.updateTopic(hostSession.sessionId, topicId, status); await refreshHostTopics(); }
+  catch (error) { hostSessionError = error.message; render(); }
+}
+async function toggleSubmissions() {
+  try { const { session } = await api.setSubmissions(hostSession.sessionId, !hostSession.submissionsOpen); saveHostSession(session); hostSessionError = ''; }
+  catch (error) { hostSessionError = error.message; }
+  render();
+}
+function renderParticipant() {
+  document.querySelector('#scoreboard').innerHTML = '';
+  document.querySelector('#game-view').innerHTML = `<section class="card centered"><p class="eyebrow">Anonymous topic drop</p><h2>Send a topic to session ${escapeHtml(joinSessionId)}</h2><form id="participant-form" class="inline-form"><input id="participant-topic" maxlength="80" placeholder="Person, place, or thing" /><button type="submit">Submit</button></form><p id="participant-message"></p></section>`;
+  document.querySelector('#participant-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const input = document.querySelector('#participant-topic');
+    const message = document.querySelector('#participant-message');
+    try { await api.submitTopic(joinSessionId, input.value); input.value = ''; message.textContent = 'Topic submitted anonymously.'; }
+    catch (error) { message.textContent = error.message; }
+  });
 }
 
 function addTeam(event) {

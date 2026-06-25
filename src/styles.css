@@ -46,3 +46,11 @@ h2 { display: flex; align-items: center; gap: .5rem; margin: 0 0 1rem; font-size
 .danger-btn { background: #c7353d; }
 @keyframes pulse { 50% { transform: scale(1.04); } }
 @media (max-width: 760px) { .hero, .round-header { flex-direction: column; align-items: stretch; } .setup-grid, .inline-form { grid-template-columns: 1fr; } }
+.session-code { font-size: 1.1rem; }
+.error { color: #c7353d; font-weight: 800; }
+.topic-list { display: grid; gap: .6rem; margin-top: 1rem; }
+.topic-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: .5rem; align-items: center; padding: .65rem; border-radius: 1rem; background: #f4fbf9; }
+.topic-row small { color: #64777d; font-weight: 900; text-transform: uppercase; }
+.topic-row button { padding: .45rem .7rem; font-size: .82rem; }
+a { color: #0b6b7b; font-weight: 800; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .topic-row { grid-template-columns: 1fr; align-items: stretch; } }
