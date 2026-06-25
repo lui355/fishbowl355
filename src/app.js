@@ -6,6 +6,8 @@ const ROUND_HELP = [
 ];
 const STARTER_WORDS = ['octopus', 'time machine', 'karaoke', 'volcano', 'grandma', 'moonwalk', 'detective', 'pickleball'];
 const STORAGE_KEY = 'fishbowl355-state';
+const SUBMISSIONS_KEY = 'fishbowl355-submissions';
+const sessionId = new URLSearchParams(window.location.search).get('session')?.trim();
 let timerId;
 let timeLeft = 60;
 let state = loadState();
@@ -44,12 +46,49 @@ function escapeHtml(value) {
 
 function render() {
   clearInterval(timerId);
+  if (sessionId) {
+    renderParticipantForm();
+    return;
+  }
   renderScoreboard();
   if (isComplete()) renderComplete();
   else if (state.phase === 'setup') renderSetup();
   else if (state.phase === 'between') renderBetween();
   else renderPlay();
 }
+
+function renderParticipantForm(success = false) {
+  document.querySelector('#scoreboard').innerHTML = '';
+  document.querySelector('#reset-button').hidden = true;
+  document.querySelector('.hero .eyebrow').textContent = '🐟 Fishbowl submission';
+  document.querySelector('.hero h1').textContent = 'Add a topic to the bowl.';
+  document.querySelector('.hero-copy').textContent = 'Submit a word, phrase, topic, or question for this session from your phone.';
+  document.querySelector('#game-view').innerHTML = `
+    <section class="card participant-card">
+      <p class="eyebrow">Session ${escapeHtml(sessionId)}</p>
+      <h2>What should players guess?</h2>
+      <p class="helper-text">Submissions are anonymous. The host will review the bowl for this session.</p>
+      <form id="participant-form" class="participant-form">
+        <label for="submission-input">Topic or question</label>
+        <textarea id="submission-input" rows="5" placeholder="Type a person, place, thing, phrase, or question" required></textarea>
+        <button type="submit">Submit anonymously</button>
+      </form>
+      <p class="success-message" id="submission-success" ${success ? '' : 'hidden'}>✓ Thanks! Your submission was added.</p>
+    </section>`;
+  document.querySelector('#participant-form').addEventListener('submit', submitParticipantTopic);
+}
+
+function submitParticipantTopic(event) {
+  event.preventDefault();
+  const input = document.querySelector('#submission-input');
+  const text = input.value.trim();
+  if (!text) return;
+  const submissions = JSON.parse(localStorage.getItem(SUBMISSIONS_KEY) || '[]');
+  submissions.push({ id: id(), session: sessionId, text, submittedAt: new Date().toISOString() });
+  localStorage.setItem(SUBMISSIONS_KEY, JSON.stringify(submissions));
+  renderParticipantForm(true);
+}
+
 function renderScoreboard() {
   document.querySelector('#scoreboard').innerHTML = state.teams.map((team, index) => `
     <article class="team-card ${index === state.currentTeam ? 'active' : ''}">
@@ -142,5 +181,5 @@ function pass() {
 }
 function resetGame() { localStorage.removeItem(STORAGE_KEY); state = defaultState(); timeLeft = state.turnSeconds; render(); }
 
-document.querySelector('#reset-button').addEventListener('click', resetGame);
+if (!sessionId) document.querySelector('#reset-button').addEventListener('click', resetGame);
 render();
