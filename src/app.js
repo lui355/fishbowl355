@@ -9,6 +9,11 @@ const STORAGE_KEY = 'fishbowl355-state';
 let timerId;
 let timeLeft = 60;
 let state = loadState();
+let sessionId = new URLSearchParams(location.search).get('session');
+let participantMode = new URLSearchParams(location.search).get('role') === 'participant';
+let sessionRef;
+let unsubscribeSession;
+let suppressSync = false;
 
 function id() { return crypto.randomUUID(); }
 function shuffle(list) { return [...list].sort(() => Math.random() - 0.5); }
@@ -34,7 +39,58 @@ function loadState() {
   return defaultState();
 }
 function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
-function setState(patch) { state = { ...state, ...patch }; save(); render(); }
+function setState(patch) { state = { ...state, ...patch }; save(); syncSession(); render(); }
+function firebaseConfig() { return window.FISHBOWL_CONFIG?.firebase || {}; }
+function backendReady() { return typeof firebase !== 'undefined' && Object.values(firebaseConfig()).every(Boolean); }
+function joinUrl() {
+  const base = window.FISHBOWL_CONFIG?.publicUrl || location.origin + location.pathname;
+  return `${base}?session=${sessionId}&role=participant`;
+}
+function qrUrl() { return `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(joinUrl())}`; }
+function initBackend() {
+  if (!backendReady()) return;
+  if (!firebase.apps.length) firebase.initializeApp(firebaseConfig());
+}
+function syncSession() {
+  if (!sessionRef || participantMode || suppressSync) return;
+  sessionRef.set({ state, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+}
+async function createSession() {
+  if (!backendReady()) return alert('Add Firebase credentials and rebuild before creating host sessions.');
+  initBackend();
+  sessionId = Math.random().toString(36).slice(2, 8).toUpperCase();
+  history.replaceState(null, '', `?session=${sessionId}`);
+  sessionRef = firebase.firestore().collection('sessions').doc(sessionId);
+  await sessionRef.set({ state, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+  subscribeSession();
+  render();
+}
+function subscribeSession() {
+  if (!sessionId || !backendReady()) return;
+  initBackend();
+  sessionRef = firebase.firestore().collection('sessions').doc(sessionId);
+  unsubscribeSession?.();
+  unsubscribeSession = sessionRef.onSnapshot((doc) => {
+    const remote = doc.data()?.state;
+    if (!remote) return;
+    suppressSync = true;
+    state = remote;
+    save();
+    render();
+    suppressSync = false;
+  });
+}
+async function participantAddWord(event) {
+  event.preventDefault();
+  const input = document.querySelector('#participant-word-input');
+  const text = input.value.trim();
+  if (!text || !sessionRef) return;
+  await sessionRef.update({
+    'state.words': firebase.firestore.FieldValue.arrayUnion(word(text)),
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+  input.value = '';
+}
 function remainingWords() { return state.words.filter((item) => !item.guessed); }
 function currentWord() { return state.words.find((item) => item.id === state.currentWordId) || remainingWords()[0]; }
 function isComplete() { return state.phase === 'complete' || state.round >= ROUND_NAMES.length; }
@@ -45,6 +101,7 @@ function escapeHtml(value) {
 function render() {
   clearInterval(timerId);
   renderScoreboard();
+  if (participantMode) return renderParticipant();
   if (isComplete()) renderComplete();
   else if (state.phase === 'setup') renderSetup();
   else if (state.phase === 'between') renderBetween();
@@ -60,17 +117,23 @@ function renderScoreboard() {
 }
 function renderSetup() {
   document.querySelector('#game-view').innerHTML = `
+    ${sessionId ? `<section class="card host-session"><h2>📱 Mobile participants</h2><p>Ask players to scan this QR code or open <strong>${joinUrl()}</strong> to add bowl words from their phones.</p><img alt="Participant join QR code" src="${qrUrl()}" /><p class="session-code">Session code: ${sessionId}</p></section>` : `<section class="card host-session"><h2>📱 Mobile participants</h2><p>Create a hosted session to let players add words from their own phones.</p><button id="create-session">Create host session</button></section>`}
     <section class="setup-grid">
       <article class="card"><h2>👥 Teams</h2><form id="team-form" class="inline-form"><input id="team-input" placeholder="Add team name" /><button type="submit">＋ Add</button></form><div class="chip-list">${state.teams.map((team) => `<button class="chip" data-remove-team="${team.id}">${escapeHtml(team.name)} ${state.teams.length > 2 ? '×' : ''}</button>`).join('')}</div></article>
       <article class="card"><h2>🐠 Bowl words</h2><form id="word-form" class="inline-form"><input id="word-input" placeholder="Add a person, place, or thing" /><button type="submit">＋ Add</button></form><div class="chip-list">${state.words.map((item) => `<button class="chip" data-remove-word="${item.id}">${escapeHtml(item.text)} ×</button>`).join('')}</div></article>
       <article class="card rules"><h2>⏱ Rules</h2><ol>${ROUND_NAMES.map((round, index) => `<li><strong>${round}:</strong> ${ROUND_HELP[index]}</li>`).join('')}</ol><label>Turn length <input id="turn-seconds" type="number" min="15" max="180" value="${state.turnSeconds}" /> seconds</label><button id="start-game" ${state.words.length < 3 ? 'disabled' : ''}>Start game</button></article>
     </section>`;
+  document.querySelector('#create-session')?.addEventListener('click', createSession);
   document.querySelector('#team-form').addEventListener('submit', addTeam);
   document.querySelector('#word-form').addEventListener('submit', addWord);
   document.querySelector('#turn-seconds').addEventListener('change', (event) => setState({ turnSeconds: Number(event.target.value) }));
   document.querySelector('#start-game').addEventListener('click', startGame);
   document.querySelectorAll('[data-remove-team]').forEach((button) => button.addEventListener('click', () => removeTeam(button.dataset.removeTeam)));
   document.querySelectorAll('[data-remove-word]').forEach((button) => button.addEventListener('click', () => removeWord(button.dataset.removeWord)));
+}
+function renderParticipant() {
+  document.querySelector('#game-view').innerHTML = `<section class="card centered participant-card"><p class="eyebrow">Session ${sessionId || ''}</p><h2>Submit a Fishbowl word</h2><p>Your word is sent to the host bowl. Keep adding people, places, and things until the host starts.</p><form id="participant-word-form" class="inline-form"><input id="participant-word-input" placeholder="Add a person, place, or thing" autocomplete="off" /><button type="submit">Send word</button></form><p>${state.words.length} words are currently in the bowl.</p></section>`;
+  document.querySelector('#participant-word-form').addEventListener('submit', participantAddWord);
 }
 function renderBetween() {
   document.querySelector('#game-view').innerHTML = `<section class="card centered"><p class="eyebrow">🔀 Next turn</p><h2>${escapeHtml(state.teams[state.currentTeam].name)}, you are up.</h2><p>Round ${state.round + 1}: ${ROUND_NAMES[state.round]}. ${ROUND_HELP[state.round]}</p><button id="start-turn">Start ${state.turnSeconds}s turn</button></section>`;
@@ -143,4 +206,5 @@ function pass() {
 function resetGame() { localStorage.removeItem(STORAGE_KEY); state = defaultState(); timeLeft = state.turnSeconds; render(); }
 
 document.querySelector('#reset-button').addEventListener('click', resetGame);
+subscribeSession();
 render();

@@ -4,6 +4,6 @@
   "description": "A browser-based Fishbowl party game.",
   "scripts": {
     "start": "python3 -m http.server 5173",
-    "build": "node scripts/check-static-site.js"
+    "build": "node scripts/generate-env.js && node scripts/check-static-site.js"
   }
 }
