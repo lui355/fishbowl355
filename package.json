@@ -1,0 +1,9 @@
+{
+  "name": "topic-draw",
+  "version": "1.0.0",
+  "description": "Anonymous topic submission and random discussion draw app.",
+  "scripts": {
+    "start": "node server.js",
+    "build": "node scripts/check-static-site.js"
+  }
+}
